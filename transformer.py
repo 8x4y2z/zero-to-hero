@@ -36,7 +36,10 @@ class MultiHeadAttentionLayer(nn.Module):
         self.key = nn.Linear(embed_dim, hidden_dim, bias=False)
         self.value = nn.Linear(embed_dim, hidden_dim, bias=False)
         self.scale = hidden_dim ** 0.5
+        self.proj = nn.Linear(hidden_dim, hidden_dim)
         self.ffn = nn.Sequential(nn.Linear(hidden_dim, ff_dim), nn.ReLU(), nn.Linear(ff_dim, hidden_dim))
+        self.norm1 = nn.LayerNorm(hidden_dim)
+        self.norm2 = nn.LayerNorm(hidden_dim)
         self.register_buffer("mask", torch.tril(torch.ones(block_size, block_size )))
 
     def forward(self, x):
@@ -59,7 +62,12 @@ class MultiHeadAttentionLayer(nn.Module):
         attention = F.softmax(energy, -1)
         out = torch.matmul(attention, v)
         out = out.permute(0, 2, 1, 3).reshape(b, t, self.hidden_dim)
+        out = self.proj(out)
+        out = out + x
+        out = self.norm1(out)
         out = self.ffn(out)
+        out = out + x
+        out = self.norm2(out)
         return out
 
 class AttentionBlocks(nn.Module):
