@@ -62,18 +62,31 @@ class MultiHeadAttentionLayer(nn.Module):
         out = self.ffn(out)
         return out
 
+class AttentionBlocks(nn.Module):
+
+    def __init__(self, nlayers, embed_dim, hidden_dim, nheads, ffn_dim ,block_size):
+        super(AttentionBlocks, self).__init__()
+        self.layers = nn.ModuleList([
+            MultiHeadAttentionLayer(embed_dim, hidden_dim, nheads, ffn_dim, block_size)
+            for _ in range(nlayers)
+        ])
+
+    def forward(self, x):
+        for layer in self.layers:
+            x = layer(x)
+        return x
+
 class Transformer(nn.Module):
 
     def __init__(self, vocab_size, embed_dim, hidden_dim, nheads,
                  ffn_dim,
+                 nlayers,
                  block_size):
         super(Transformer, self).__init__()
         self.input_embedding = nn.Embedding(vocab_size, embed_dim)
         self.position_embedding = nn.Embedding(block_size, embed_dim)
-        self.self_attention = MultiHeadAttentionLayer(embed_dim, hidden_dim,
-                                                      nheads,
-                                                      ffn_dim,
-                                                      block_size)
+        self.attentions_blocks = AttentionBlocks(nlayers, embed_dim, hidden_dim,
+                                                 nheads, ffn_dim, block_size)
         self.output_head = nn.Linear(hidden_dim, vocab_size)
 
     def forward(self, x):
@@ -81,7 +94,7 @@ class Transformer(nn.Module):
         inp_embed = self.input_embedding(x)
         tok_embed = self.position_embedding(torch.arange(t, device=device))
         x = inp_embed + tok_embed
-        x = self.self_attention(x)
+        x = self.attentions_blocks(x)
         out = self.output_head(x)
         return out
 
@@ -139,7 +152,7 @@ def get_opts(cargs=[]):
     parser.add_argument("--bs", default=8, type=int)
     parser.add_argument("--steps", default=100, type=int)
     parser.add_argument("--fname", default="input.txt")
-    parser.add_argument("--embed_dim", default=50, type=int)
+    parser.add_argument("--embed_dim", default=64, type=int)
     parser.add_argument("--hidden_dim", default=64, type=int)
     parser.add_argument("--nheads", default=8, type=int)
     parser.add_argument("--max_length", default=500, type=int)
@@ -163,6 +176,7 @@ def main(opts):
                         opts.hidden_dim,
                         opts.nheads,
                         opts.ffn_dim,
+                        opts.nlayers,
                         BLOCK_SIZE)
 
     data = torch.tensor(encode(text), dtype=torch.long)
