@@ -29,7 +29,9 @@ class MultiHeadAttentionLayer(nn.Module):
 
     def __init__(self, embed_dim, hidden_dim, nheads, block_size):
         super(MultiHeadAttentionLayer, self).__init__()
-        # self.head_dim = hidden_dim // nheads
+        self.head_dim = hidden_dim // nheads
+        self.hidden_dim = hidden_dim
+        self.nheads = nheads
         self.query = nn.Linear(embed_dim, hidden_dim, bias=False)
         self.key = nn.Linear(embed_dim, hidden_dim, bias=False)
         self.value = nn.Linear(embed_dim, hidden_dim, bias=False)
@@ -46,13 +48,17 @@ class MultiHeadAttentionLayer(nn.Module):
         k = self.key(x) # Every token also produces a key vecto. Key roughtly means what I contain
         v = self.value(x) # Value is just for aggregation at the final step
 
+        q = q.view(b, t, self.nheads, self.head_dim).permute(0, 2, 1, 3)
+        k = k.view(b, t, self.nheads, self.head_dim).permute(0, 2, 1, 3)
+        v = v.view(b, t, self.nheads, self.head_dim).permute(0, 2, 1, 3)
+
         energy = torch.matmul(q, k.transpose(-2, -1)) / self.scale # Scale is needed to stablize the upcoming softmax, so that it won't saturate,
         # and variance is reduced, specially at initialization
         energy = energy.masked_fill(self.mask[:t, :t] == 0 , float("-inf"))
         attention = F.softmax(energy, -1)
         out = torch.matmul(attention, v)
+        out = out.permute(0, 2, 1, 3).reshape(b, t, self.hidden_dim)
         return out
-
 
 class Transformer(nn.Module):
 
@@ -156,5 +162,6 @@ def main(opts):
 if __name__ == '__main__':
     cargs = []
     cargs.extend(["--steps", "1000"])
+    cargs.extend(["--lr", "1e-3"])
     opts = get_opts(cargs)
     main(opts)
