@@ -27,7 +27,7 @@ def get_val_data(val_data):
 
 class MultiHeadAttentionLayer(nn.Module):
 
-    def __init__(self, embed_dim, hidden_dim, nheads, block_size):
+    def __init__(self, embed_dim, hidden_dim, nheads, ff_dim, block_size):
         super(MultiHeadAttentionLayer, self).__init__()
         self.head_dim = hidden_dim // nheads
         self.hidden_dim = hidden_dim
@@ -36,6 +36,7 @@ class MultiHeadAttentionLayer(nn.Module):
         self.key = nn.Linear(embed_dim, hidden_dim, bias=False)
         self.value = nn.Linear(embed_dim, hidden_dim, bias=False)
         self.scale = hidden_dim ** 0.5
+        self.ffn = nn.Sequential(nn.Linear(hidden_dim, ff_dim), nn.ReLU(), nn.Linear(ff_dim, hidden_dim))
         self.register_buffer("mask", torch.tril(torch.ones(block_size, block_size )))
 
     def forward(self, x):
@@ -58,15 +59,21 @@ class MultiHeadAttentionLayer(nn.Module):
         attention = F.softmax(energy, -1)
         out = torch.matmul(attention, v)
         out = out.permute(0, 2, 1, 3).reshape(b, t, self.hidden_dim)
+        out = self.ffn(out)
         return out
 
 class Transformer(nn.Module):
 
-    def __init__(self, vocab_size, embed_dim, hidden_dim, nheads, block_size):
+    def __init__(self, vocab_size, embed_dim, hidden_dim, nheads,
+                 ffn_dim,
+                 block_size):
         super(Transformer, self).__init__()
         self.input_embedding = nn.Embedding(vocab_size, embed_dim)
         self.position_embedding = nn.Embedding(block_size, embed_dim)
-        self.self_attention = MultiHeadAttentionLayer(embed_dim, hidden_dim, nheads, block_size)
+        self.self_attention = MultiHeadAttentionLayer(embed_dim, hidden_dim,
+                                                      nheads,
+                                                      ffn_dim,
+                                                      block_size)
         self.output_head = nn.Linear(hidden_dim, vocab_size)
 
     def forward(self, x):
@@ -94,13 +101,14 @@ def train(model:nn.Module, train_dataset, val_dataset, steps, bs, optim):
 
         # val step
         if ((step + 1) % 100 == 0):
-            model.eval()
-            X = val_dataset["X"].to(device)
-            Y = val_dataset["Y"].to(device)
-            ypred = model(X)
-            bs, ts, d = ypred.shape
-            val_loss = F.cross_entropy(ypred.view(bs * ts, d), Y.view(bs * ts))
-            print(f"[{step + 1}]/[{steps}]: train loss is {loss.item():.4f}: val loss is {val_loss:.4f}")
+            with torch.no_grad():
+                model.eval()
+                X = val_dataset["X"].to(device)
+                Y = val_dataset["Y"].to(device)
+                ypred = model(X)
+                bs, ts, d = ypred.shape
+                val_loss = F.cross_entropy(ypred.view(bs * ts, d), Y.view(bs * ts))
+                print(f"[{step + 1}]/[{steps}]: train loss is {loss.item():.4f}: val loss is {val_loss:.4f}")
 
 def generate(model, idx:torch.Tensor, max_length, block_size):
     model.to(device)
@@ -125,7 +133,9 @@ def get_opts(cargs=[]):
     parser.add_argument("--hidden_dim", default=64, type=int)
     parser.add_argument("--nheads", default=8, type=int)
     parser.add_argument("--max_length", default=500, type=int)
-
+    parser.add_argument("--nlayers", default=6, type=int)
+    parser.add_argument("--ffn_dim", default=256, type=int)
+    
     if cargs:
         opts = parser.parse_args(cargs)
     else:
@@ -138,7 +148,12 @@ def main(opts):
     encode = lambda x: [stoi[xx] for xx in x]
     decode = lambda l: "".join([itos[xx] for xx in l])
     vocab_size = len(stoi)
-    model = Transformer(vocab_size, opts.embed_dim, opts.hidden_dim, opts.nheads, BLOCK_SIZE)
+    model = Transformer(vocab_size,
+                        opts.embed_dim,
+                        opts.hidden_dim,
+                        opts.nheads,
+                        opts.ffn_dim,
+                        BLOCK_SIZE)
 
     data = torch.tensor(encode(text), dtype=torch.long)
     n = int(0.9 * len(data))
