@@ -25,16 +25,52 @@ def get_val_data(val_data):
     val_y = torch.stack([val_data[i+1:i+1+BLOCK_SIZE] for i in range(len(val_data) - BLOCK_SIZE)])
     return {"X":val_x, "Y":val_y}
 
+class MultiHeadAttentionLayer(nn.Module):
 
-class Bigram(nn.Module):
-    def __init__(self, vocab_size, embed_dim):
-        super(Bigram, self).__init__()
-        self.embedding = nn.Embedding(vocab_size, embed_dim)
+    def __init__(self, embed_dim, hidden_dim, nheads, block_size):
+        super(MultiHeadAttentionLayer, self).__init__()
+        # self.head_dim = hidden_dim // nheads
+        self.query = nn.Linear(embed_dim, hidden_dim, bias=False)
+        self.key = nn.Linear(embed_dim, hidden_dim, bias=False)
+        self.value = nn.Linear(embed_dim, hidden_dim, bias=False)
+        self.scale = hidden_dim ** 0.5
+        self.register_buffer("mask", torch.tril(torch.ones(block_size, block_size )))
 
     def forward(self, x):
-        # x:[b]
-        y = self.embedding(x) # [b x embed_dim]
-        return y
+        # Following is self attention as keys values and queries all come from x
+        # In cross attention only queries come from x, where as keys and values are from a different
+        # vector.
+
+        b, t, c = x.shape
+        q = self.query(x) # Every token produces a query vector. Query roughly means what I'm looking for
+        k = self.key(x) # Every token also produces a key vecto. Key roughtly means what I contain
+        v = self.value(x) # Value is just for aggregation at the final step
+
+        energy = torch.matmul(q, k.transpose(-2, -1)) / self.scale # Scale is needed to stablize the upcoming softmax, so that it won't saturate,
+        # and variance is reduced, specially at initialization
+        energy = energy.masked_fill(self.mask[:t, :t] == 0 , float("-inf"))
+        attention = F.softmax(energy, -1)
+        out = torch.matmul(attention, v)
+        return out
+
+
+class Transformer(nn.Module):
+
+    def __init__(self, vocab_size, embed_dim, hidden_dim, nheads, block_size):
+        super(Transformer, self).__init__()
+        self.input_embedding = nn.Embedding(vocab_size, embed_dim)
+        self.position_embedding = nn.Embedding(block_size, embed_dim)
+        self.self_attention = MultiHeadAttentionLayer(embed_dim, hidden_dim, nheads, block_size)
+        self.output_head = nn.Linear(hidden_dim, vocab_size)
+
+    def forward(self, x):
+        b, t = x.shape
+        inp_embed = self.input_embedding(x)
+        tok_embed = self.position_embedding(torch.arange(t, device=device))
+        x = inp_embed + tok_embed
+        x = self.self_attention(x)
+        out = self.output_head(x)
+        return out
 
 def train(model:nn.Module, train_dataset, val_dataset, steps, bs, optim):
     model.to(device)
@@ -60,26 +96,29 @@ def train(model:nn.Module, train_dataset, val_dataset, steps, bs, optim):
             val_loss = F.cross_entropy(ypred.view(bs * ts, d), Y.view(bs * ts))
             print(f"[{step + 1}]/[{steps}]: train loss is {loss.item():.4f}: val loss is {val_loss:.4f}")
 
-def generate(model, idx:torch.Tensor, max_length):
+def generate(model, idx:torch.Tensor, max_length, block_size):
     model.to(device)
     model.eval()
     idx = idx.to(device)
     for _ in range(max_length):
-        logits = model(idx) # [bs x ts x C]
+        logits = model(idx[:, -block_size:]) # [bs x ts x C]
         logits = logits[:, -1, :] # [bs x C]
         probs = F.softmax(logits, dim=-1)
         _next = torch.multinomial(probs, num_samples=1)
         idx = torch.cat([idx, _next], dim=1)
     return idx
+            
 
 def get_opts(cargs=[]):
     parser = ArgumentParser()
     parser.add_argument("--lr", type=float, default=0.1)
-    parser.add_argument("--bs", default=32, type=int)
+    parser.add_argument("--bs", default=8, type=int)
     parser.add_argument("--steps", default=100, type=int)
     parser.add_argument("--fname", default="input.txt")
-    parser.add_argument("--embed_dim", default=100, type=int)
-    parser.add_argument("--hidden_dim", default=256, type=int)
+    parser.add_argument("--embed_dim", default=50, type=int)
+    parser.add_argument("--hidden_dim", default=64, type=int)
+    parser.add_argument("--nheads", default=8, type=int)
+    parser.add_argument("--max_length", default=500, type=int)
 
     if cargs:
         opts = parser.parse_args(cargs)
@@ -87,18 +126,19 @@ def get_opts(cargs=[]):
         opts = parser.parse_args()
     return opts
 
+
 def main(opts):
     stoi, itos, text = buil_vocab(opts.fname)
     encode = lambda x: [stoi[xx] for xx in x]
     decode = lambda l: "".join([itos[xx] for xx in l])
     vocab_size = len(stoi)
-    model = Bigram(vocab_size, vocab_size)
-    
+    model = Transformer(vocab_size, opts.embed_dim, opts.hidden_dim, opts.nheads, BLOCK_SIZE)
+
     data = torch.tensor(encode(text), dtype=torch.long)
     n = int(0.9 * len(data))
     train_data = data[:n]
     val_data = data[n:]
-    
+
     train_dataset = get_train_data(train_data, opts.bs)
     val_dataset = get_val_data(val_data)
     optim = torch.optim.AdamW(model.parameters(),lr=opts.lr)
@@ -110,11 +150,11 @@ def main(opts):
         opts.bs,
         optim
     )
-    out = generate(model, torch.zeros((1,1),dtype=torch.long), max_length=500)
+    out = generate(model, torch.zeros((1,1),dtype=torch.long), opts.max_length, BLOCK_SIZE)
     print(decode(out[0].tolist()))
 
 if __name__ == '__main__':
     cargs = []
-    cargs.extend(["--steps", "2000"])
+    cargs.extend(["--steps", "1000"])
     opts = get_opts(cargs)
     main(opts)
