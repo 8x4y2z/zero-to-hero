@@ -101,14 +101,24 @@ def train(model:nn.Module, train_dataset, val_dataset, steps, bs, optim):
 
         # val step
         if ((step + 1) % 100 == 0):
+            val_loss = []
+            i = 0
+            vbs = 10 * bs
             with torch.no_grad():
                 model.eval()
-                X = val_dataset["X"].to(device)
-                Y = val_dataset["Y"].to(device)
-                ypred = model(X)
-                bs, ts, d = ypred.shape
-                val_loss = F.cross_entropy(ypred.view(bs * ts, d), Y.view(bs * ts))
-                print(f"[{step + 1}]/[{steps}]: train loss is {loss.item():.4f}: val loss is {val_loss:.4f}")
+                X = val_dataset["X"]
+                Y = val_dataset["Y"]
+                while True:
+                    xb = X[i * vbs : i * vbs + vbs].to(device)
+                    yb = Y[i * vbs : i * vbs + vbs].to(device)
+                    if len(xb) == 0:
+                        break
+                    ypred = model(xb)
+                    sbs, ts, d = ypred.shape
+                    vloss = F.cross_entropy(ypred.view(sbs * ts, d), yb.view(sbs * ts))
+                    val_loss.append(vloss)
+                    i += 1
+                print(f"[{step + 1}]/[{steps}]: train loss is {loss.item():.4f}: val loss is {sum(val_loss) / len(val_loss):.4f}")
 
 def generate(model, idx:torch.Tensor, max_length, block_size):
     model.to(device)
